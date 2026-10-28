@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#faf9f7">
+    <meta
+      name="description"
+      content="Audare. When your plan needs to be bold."
+    >
+    <title>Audare</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, Helvetica, sans-serif;
+        color: #141414;
+        background: #faf9f7;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 280px;
+        min-height: 100vh;
+        margin: 0;
+        padding: 40px 30px 32px;
+        display: flex;
+        flex-direction: column;
+      }
+
+      header {
+        font-size: 29px;
+        font-weight: 400;
+        letter-spacing: 0.015em;
+        line-height: 1.2;
+      }
+
+      main {
+        flex: 1;
+        display: flex;
+        align-items: center;
+      }
+
+      .tagline {
+        margin: 0;
+        font-size: clamp(20px, 2.65vw, 25px);
+        font-style: italic;
+        line-height: 1.4;
+      }
+
+      footer {
+        font-size: 19px;
+        line-height: 1.4;
+      }
+
+      a {
+        color: #485765;
+        text-decoration: none;
+      }
+
+      a:hover,
+      a:focus-visible {
+        text-decoration: underline;
+        text-underline-offset: 0.2em;
+      }
+
+      @media (max-width: 480px) {
+        body {
+          padding: 28px 22px 24px;
+        }
+
+        header {
+          font-size: 25px;
+        }
+
+        footer {
+          font-size: 17px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>AUDARE</header>
+    <main>
+      <p class="tagline">When your plan needs to be bold.</p>
+    </main>
+    <footer><a href="mailto:contact@audare.eu">contact@audare.eu</a></footer>
+  </body>
+</html>
