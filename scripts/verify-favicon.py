@@ -1,11 +1,10 @@
 import argparse
 import math
 import re
+import struct
 import xml.etree.ElementTree as ET
+import zlib
 from pathlib import Path
-
-from PIL import Image
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SVG_PATH = ROOT / "favicon.svg"
@@ -14,6 +13,7 @@ SIZE = 16
 PIXEL_CENTER = (SIZE - 1) / 2
 BACKGROUND = (250, 249, 247, 255)
 SVG_NS = "{http://www.w3.org/2000/svg}"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def parse_color(value):
@@ -102,31 +102,106 @@ def render_icon(geometry):
                         coverage += 1
             alpha = round(255 * coverage / samples_per_axis ** 2)
             pixels.append((*color, alpha) if alpha else (0, 0, 0, 0))
-
-    image = Image.new("RGBA", (SIZE, SIZE))
-    image.putdata(pixels)
-    return image
+    return pixels
 
 
-def verify_pixels(image):
-    pixels = image.load()
+def encode_png(width, height, pixels):
+    if len(pixels) != width * height:
+        raise AssertionError("PNG pixel count does not match its dimensions")
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)
+        for pixel in pixels[y * width:(y + 1) * width]:
+            raw.extend(pixel)
+
+    def chunk(name, data):
+        checksum = zlib.crc32(name + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + name + data + struct.pack(">I", checksum)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (
+        PNG_SIGNATURE
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+def write_png(path, width, height, pixels):
+    path.write_bytes(encode_png(width, height, pixels))
+
+
+def read_rgba_png(path):
+    data = path.read_bytes()
+    if not data.startswith(PNG_SIGNATURE):
+        raise AssertionError(f"{path} is not a PNG")
+    offset = len(PNG_SIGNATURE)
+    compressed = bytearray()
+    width = height = None
+    while offset < len(data):
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        name = data[offset + 4:offset + 8]
+        contents = data[offset + 8:offset + 8 + length]
+        checksum = struct.unpack(">I", data[offset + 8 + length:offset + 12 + length])[0]
+        if zlib.crc32(name + contents) & 0xFFFFFFFF != checksum:
+            raise AssertionError(f"PNG chunk checksum failed in {path}")
+        offset += 12 + length
+        if name == b"IHDR":
+            width, height, bit_depth, color_type, compression, filtering, interlace = (
+                struct.unpack(">IIBBBBB", contents)
+            )
+            if (bit_depth, color_type, compression, filtering, interlace) != (8, 6, 0, 0, 0):
+                raise AssertionError(f"Unsupported PNG format in {path}")
+        elif name == b"IDAT":
+            compressed.extend(contents)
+        elif name == b"IEND":
+            break
+    if width is None or height is None:
+        raise AssertionError(f"PNG dimensions missing in {path}")
+
+    raw = zlib.decompress(compressed)
+    stride = width * 4
+    pixels = []
+    for y in range(height):
+        row = raw[y * (stride + 1):(y + 1) * (stride + 1)]
+        if len(row) != stride + 1 or row[0] != 0:
+            raise AssertionError(f"Unsupported PNG row encoding in {path}")
+        pixels.extend(
+            tuple(row[index:index + 4])
+            for index in range(1, len(row), 4)
+        )
+    return width, height, pixels
+
+
+def verify_pixels(pixels):
     for y in range(SIZE):
         for x in range(SIZE):
-            if pixels[x, y] != pixels[SIZE - 1 - x, SIZE - 1 - y]:
+            if pixels[y * SIZE + x] != pixels[(SIZE - 1 - y) * SIZE + SIZE - 1 - x]:
                 raise AssertionError(f"180-degree pixel symmetry fails at {(x, y)}")
 
-    bounds = image.getbbox()
+    opaque = [
+        (x, y)
+        for y in range(SIZE)
+        for x in range(SIZE)
+        if pixels[y * SIZE + x][3] > 0
+    ]
+    bounds = (
+        min(x for x, _ in opaque),
+        min(y for _, y in opaque),
+        max(x for x, _ in opaque) + 1,
+        max(y for _, y in opaque) + 1,
+    )
     if bounds != (1, 1, 15, 15):
         raise AssertionError(f"Raster bounds are {bounds}, expected one-pixel equal margins")
 
     upper_side = sum(
-        pixels[x, y][3]
+        pixels[y * SIZE + x][3]
         for y in range(SIZE)
         for x in range(SIZE)
         if x + y < 15
     )
     lower_side = sum(
-        pixels[x, y][3]
+        pixels[y * SIZE + x][3]
         for y in range(SIZE)
         for x in range(SIZE)
         if x + y > 15
@@ -138,21 +213,30 @@ def verify_pixels(image):
 
 
 def write_preview(image, destination):
-    background = Image.new("RGBA", image.size, BACKGROUND)
-    background.alpha_composite(image)
-    preview = background.resize((SIZE * 16, SIZE * 16), Image.Resampling.NEAREST)
-    preview.save(destination)
-    output = Image.open(destination).convert("RGBA")
-    if output.size != (SIZE * 16, SIZE * 16):
-        raise AssertionError(f"Unexpected preview size: {output.size}")
-    output_pixels = output.load()
-    source_pixels = background.load()
+    background = []
+    for red, green, blue, alpha in image:
+        background.append(tuple(
+            round(channel * alpha / 255 + BACKGROUND[index] * (255 - alpha) / 255)
+            for index, channel in enumerate((red, green, blue))
+        ) + (255,))
+    preview = []
+    for y in range(SIZE):
+        for _ in range(16):
+            row = []
+            for x in range(SIZE):
+                row.extend([background[y * SIZE + x]] * 16)
+            preview.extend(row)
+
+    write_png(destination, SIZE * 16, SIZE * 16, preview)
+    width, height, output = read_rgba_png(destination)
+    if (width, height) != (SIZE * 16, SIZE * 16):
+        raise AssertionError(f"Unexpected preview size: {(width, height)}")
     for y in range(SIZE):
         for x in range(SIZE):
-            expected = source_pixels[x, y]
+            expected = background[y * SIZE + x]
             for preview_y in range(y * 16, (y + 1) * 16):
                 for preview_x in range(x * 16, (x + 1) * 16):
-                    if output_pixels[preview_x, preview_y] != expected:
+                    if output[preview_y * width + preview_x] != expected:
                         raise AssertionError("Preview is not nearest-neighbour enlarged")
 
 
@@ -162,15 +246,15 @@ def main():
     args = parser.parse_args()
 
     geometry = verify_geometry()
-    image = render_icon(geometry)
-    side_weights = verify_pixels(image)
-    image.save(PNG_PATH)
-    saved_image = Image.open(PNG_PATH).convert("RGBA")
-    if saved_image.tobytes() != image.tobytes():
+    pixels = render_icon(geometry)
+    side_weights = verify_pixels(pixels)
+    write_png(PNG_PATH, SIZE, SIZE, pixels)
+    width, height, saved_pixels = read_rgba_png(PNG_PATH)
+    if (width, height) != (SIZE, SIZE) or saved_pixels != pixels:
         raise AssertionError("Saved favicon PNG differs from the verified raster")
-    verify_pixels(saved_image)
+    verify_pixels(saved_pixels)
     if args.preview:
-        write_preview(image, args.preview)
+        write_preview(pixels, args.preview)
 
     cx, cy, radius, stroke_width, _, _, margins = geometry
     print(f"Circle center: ({cx:g}, {cy:g})")
